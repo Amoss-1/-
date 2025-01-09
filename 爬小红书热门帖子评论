@@ -1,0 +1,153 @@
+import requests
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
+from webdriver_manager.chrome import ChromeDriverManager
+import pandas as pd
+import time
+
+# 初始化 WebDriver
+driver = webdriver.Chrome(ChromeDriverManager().install())
+
+# 访问小红书网站
+url = 'https://www.xiaohongshu.com/'
+driver.get(url)
+
+# 搜索关键词
+search_box = driver.find_element(By.ID, 'search-input')
+search_box.send_keys("华为鸿蒙NEXT会员活动")
+
+# 回车跳转
+search_box.send_keys(Keys.ENTER)
+
+# 等待页面加载
+wait = WebDriverWait(driver, 20)
+wait.until(EC.presence_of_element_located((By.CLASS_NAME, "note-text")))
+
+# 精确定位到下拉菜单，并使用action类模拟点击出菜单
+try:
+    # 使用CSS选择器定位SVG元素
+    pull_down_symbol = driver.find_element(By.CSS_SELECTOR, '#global > div.main-container > div.with-side-bar.main-content > div > div.middle > div.filter-box > div')
+    
+    # 如果需要点击SVG元素
+    pull_down_symbol.click()
+    
+    # 如果需要进行其他操作，比如获取属性等
+    # attribute_value = svg_element.get_attribute('attribute_name')
+    
+except NoSuchElementException:
+    print("找不到下拉菜单")
+except Exception as e:
+    print(f"发生错误: {e}")
+
+# 精确定位到最热元素，并使用action类模拟点击最热
+try:
+    # 使用CSS选择器定位最热元素
+    hot_symbol = driver.find_element(By.CSS_SELECTOR, 'body > div:nth-child(13) > div > li:nth-child(3) > span')
+    
+    # 如果需要点击SVG元素
+    hot_symbol.click()
+    
+    # 如果需要进行其他操作，比如获取属性等
+    # attribute_value = svg_element.get_attribute('attribute_name')
+    
+except NoSuchElementException:
+    print("找不最热元素")
+except Exception as e:
+    print(f"发生错误: {e}")
+
+# 返回重新定位的网站
+redirected_url = driver.current_url
+
+# 初始化 DataFrame
+df = pd.DataFrame(columns=['标题', '链接', '帖子内容', '父评论内容', '子评论内容'])
+
+'''
+用的selenium去做，前一版本在操作过程中发现小红书有反扒机制。因为是我采用的是遍历逻辑，section1到section2到section3,对应的是一开始的界面的帖子1,2,3。。
+假设你的最初网页元素section 1 的那个帖子是帖子1，进去帖子1爬取评论后，返回，网页推荐机制会刷新section2为新的帖子2
+再爬了再出来
+网页推荐机制会刷新section3为新的帖子3，问题就出在这，新的帖子3会被推荐成帖子1
+再进去出来，新刷新出来的section4的帖子，被推荐成帖子2.
+于是你就只能在帖子1,2之间搜集
+被反爬了
+更改思路为，先获取所有的网页，然后弄
+'''
+
+# 滚动页面
+scroll_count = 0
+max_scrolls = 10
+while scroll_count < max_scrolls:
+    # 获取页面所有帖子
+    section_container = driver.find_elements(By.XPATH, "//section[@data-v-69111fe1 and @data-v-7aab4d45]")
+    
+    for section in section_container:
+        try:
+            # 获取帖子标题
+            title_a = section.find_element(By.XPATH, ".//a[@class='title']")
+            title_span = title_a.find_element(By.XPATH, ".//span")
+            title_content = title_span.text
+            
+            # 获取帖子链接
+            href_value = section.find_element(By.XPATH, ".//a[@class='cover ld mask']").get_attribute('href')
+            
+            # 访问帖子链接
+            driver.get(href_value)
+            
+            # 获取帖子内容
+            try:
+                post_content = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "note-text"))).text
+            except TimeoutException:
+                post_content = ""
+                print("等待帖子内容超时")
+            
+            # 获取评论内容
+            parent_comments = []
+            son_comments = []
+            try:
+                parent_comment_sections = driver.find_elements(By.CLASS_NAME, "parent-comment")
+                for comment_section in parent_comment_sections:
+                    parent_comment = comment_section.find_element(By.XPATH, ".//span[@class='note-text']").text
+                    parent_comments.append(parent_comment)
+                    
+                    # 获取子评论
+                    reply_containers = comment_section.find_elements(By.XPATH, ".//div[@class='reply-container']")
+                    for reply in reply_containers:
+                        son_comment = reply.find_element(By.XPATH, ".//span[@class='note-text']").text
+                        son_comments.append(son_comment)
+            except NoSuchElementException:
+                print("找不到评论内容")
+            
+            # 将数据添加到 DataFrame
+            df = df.append({
+                '标题': title_content,
+                '链接': href_value,
+                '帖子内容': post_content,
+                '父评论内容': parent_comments,
+                '子评论内容': son_comments
+            }, ignore_index=True)
+            
+            # 返回搜索结果页面
+            driver.back()
+            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "note-text")))
+        
+        except NoSuchElementException:
+            print("找不到元素")
+        except StaleElementReferenceException:
+            print("元素过时，重新获取")
+        except Exception as e:
+            print(f"发生错误: {e}")
+    
+    # 滚动页面
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(2)  # 等待页面加载
+    scroll_count += 1
+    print(f"页面滚动次数: {scroll_count}")
+
+# 保存数据到 CSV
+df.to_csv(r'D:\xunihuanjing\eva\eva\data\20241108-20241120\combined_data.csv', index=False)
+
+# 关闭 WebDriver
+driver.quit()
